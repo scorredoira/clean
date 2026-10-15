@@ -8,7 +8,7 @@ use crate::human;
 
 // clean removes only what nobody needs, and reports what it did.
 pub fn clean(home: &Path, report: impl Fn(String)) {
-    if let Some(line) = kill_debug_browsers() {
+    if let Some(line) = crate::browsers::kill() {
         report(line);
     }
     if let Some(line) = old_device_support(home) {
@@ -19,50 +19,6 @@ pub fn clean(home: &Path, report: impl Fn(String)) {
     }
     if let Some(line) = run(&["brew", "cleanup", "--prune=all"]) {
         report(line);
-    }
-}
-
-// kill_debug_browsers ends every Chrome started with --remote-debugging-port, which is how
-// bro and peek launch theirs; the user's own Chrome never carries that flag.
-// Killing the main process takes its helpers with it.
-fn kill_debug_browsers() -> Option<String> {
-    let output = Command::new("ps").args(["-axo", "pid=,ppid=,rss=,command="]).output().ok()?;
-    let listing = String::from_utf8_lossy(&output.stdout);
-    let processes: Vec<(u32, u32, u64, &str)> = listing
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
-            let ppid = fields.next()?.parse().ok()?;
-            let rss_kb: u64 = fields.next()?.parse().ok()?;
-            let command_start = line.find(" /").or_else(|| line.rfind(' '))?;
-            Some((pid, ppid, rss_kb, line[command_start..].trim()))
-        })
-        .collect();
-
-    let browsers: Vec<u32> = processes
-        .iter()
-        .filter(|(_, _, _, command)| {
-            let executable = command.split(" --").next().unwrap_or("");
-            executable.ends_with("/Contents/MacOS/Google Chrome") && command.contains(" --remote-debugging-port")
-        })
-        .map(|(pid, _, _, _)| *pid)
-        .collect();
-    if browsers.is_empty() {
-        return None;
-    }
-
-    let memory_kb: u64 = processes
-        .iter()
-        .filter(|(pid, ppid, _, _)| browsers.contains(pid) || browsers.contains(ppid))
-        .map(|(_, _, rss_kb, _)| rss_kb)
-        .sum();
-    let pids: Vec<String> = browsers.iter().map(|pid| pid.to_string()).collect();
-    match Command::new("kill").args(&pids).status() {
-        Ok(status) if status.success() => {
-            Some(format!("Killed {} bro/peek browsers ({} of memory)", browsers.len(), human(memory_kb * 1024)))
-        }
-        _ => Some(format!("kill {} failed", pids.join(" "))),
     }
 }
 

@@ -276,7 +276,7 @@ impl App {
             (None, _) => String::new(),
         };
         let left = Line::from(vec![
-            Span::styled("space  ", Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled("clean  ", Style::new().add_modifier(Modifier::BOLD)),
             Span::raw(title),
             Span::styled(format!("  {size}"), Style::new().fg(Color::Cyan)),
         ]);
