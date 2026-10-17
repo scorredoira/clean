@@ -35,6 +35,16 @@ impl Scanner {
 
     // scan sizes the path by its allocated blocks, staying on one volume.
     pub fn scan(&self, path: &Path) -> Option<Node> {
+        self.scan_reusing(path, None)
+    }
+
+    // scan_parent scans the folder holding the node, keeping the node as it is.
+    pub fn scan_parent(&self, node: Node) -> Option<Node> {
+        let parent = node.path.parent()?.to_path_buf();
+        self.scan_reusing(&parent, Some(node))
+    }
+
+    fn scan_reusing(&self, path: &Path, reused: Option<Node>) -> Option<Node> {
         let meta = fs::symlink_metadata(path).ok()?;
         let own = meta.blocks() * 512;
         self.entries.fetch_add(1, Ordering::Relaxed);
@@ -48,8 +58,12 @@ impl Scanner {
         let Ok(entries) = fs::read_dir(path) else {
             return Some(node);
         };
-        let paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        if let Some(reused) = &reused {
+            paths.retain(|path| *path != reused.path);
+        }
         let mut children: Vec<Node> = paths.par_iter().filter_map(|path| self.scan(path)).collect();
+        children.extend(reused);
         node.size += children.iter().map(|child| child.size).sum::<u64>();
         children.retain(|child| child.size >= MIN);
         children.sort_by(|a, b| b.size.cmp(&a.size));

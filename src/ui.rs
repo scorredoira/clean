@@ -32,6 +32,8 @@ struct App {
     scanner: Arc<Scanner>,
     root: Option<Node>,
     scanned: Receiver<Option<Node>>,
+    // came_from is the folder to select once the scan above base arrives.
+    came_from: Option<PathBuf>,
     view: View,
     // folder is the open folder in the Folders view, as names below base.
     folder: Vec<String>,
@@ -47,10 +49,9 @@ struct App {
 
 pub fn run(home: PathBuf, base: PathBuf) -> io::Result<()> {
     let scanner = Arc::new(Scanner::new(home.clone(), &base));
-    let (send, scanned) = mpsc::channel();
     let scan = scanner.clone();
     let scan_base = base.clone();
-    thread::spawn(move || _ = send.send(scan.scan(&scan_base)));
+    let scanned = background(move || scan.scan(&scan_base));
 
     let mut app = App {
         disk: disk(&base),
@@ -59,6 +60,7 @@ pub fn run(home: PathBuf, base: PathBuf) -> io::Result<()> {
         scanner,
         root: None,
         scanned,
+        came_from: None,
         view: View::Folders,
         folder: Vec::new(),
         cursors: Vec::new(),
@@ -79,6 +81,10 @@ impl App {
         loop {
             if let Ok(root) = self.scanned.try_recv() {
                 self.root = root;
+                if let Some(path) = self.came_from.take() {
+                    let row = self.rows().iter().position(|row| row.path == path);
+                    self.table = TableState::default().with_selected(row.or(Some(0)));
+                }
             }
             terminal.draw(|frame| self.draw(frame))?;
             if self.cleaning {
@@ -187,11 +193,31 @@ impl App {
     }
 
     fn back(&mut self) {
-        if self.view != View::Folders || self.folder.pop().is_none() {
+        if self.view != View::Folders {
+            return;
+        }
+        if self.folder.pop().is_none() {
+            self.up();
             return;
         }
         let row = self.cursors.pop().unwrap_or(0);
         self.table = TableState::default().with_selected(Some(row));
+    }
+
+    // up goes above base: it scans the parent folder again, but not base.
+    fn up(&mut self) {
+        let Some(parent) = self.base.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let Some(root) = self.root.take() else {
+            return;
+        };
+        self.came_from = Some(root.path.clone());
+        self.base = parent;
+        self.scanner.entries.store(0, Ordering::Relaxed);
+        self.scanner.bytes.store(root.size, Ordering::Relaxed);
+        let scanner = self.scanner.clone();
+        self.scanned = background(move || scanner.scan_parent(root));
     }
 
     fn switch_view(&mut self) {
@@ -401,6 +427,12 @@ fn bar(fraction: f64, width: usize) -> String {
     const EIGHTHS: [&str; 8] = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
     let eighths = (fraction.clamp(0.0, 1.0) * (width * 8) as f64).round() as usize;
     format!("{}{}", "█".repeat(eighths / 8), EIGHTHS[eighths % 8])
+}
+
+fn background(scan: impl FnOnce() -> Option<Node> + Send + 'static) -> Receiver<Option<Node>> {
+    let (send, scanned) = mpsc::channel();
+    thread::spawn(move || _ = send.send(scan()));
+    scanned
 }
 
 fn center(area: Rect, width: u16, height: u16) -> Rect {
